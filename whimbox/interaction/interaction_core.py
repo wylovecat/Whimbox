@@ -476,8 +476,40 @@ class InteractionBGD:
         logger.warning(f"Snapshot saved to {img_path}")
         cv2.imwrite(img_path, img)        
 
-from whimbox.common.handle_lib import HANDLE_OBJ
-itt = InteractionBGD(HANDLE_OBJ)
+# ---------------------------------------------------------------------------
+# 模块级单例 itt（延迟构造）
+#
+# 历史实现是在 import 阶段直接 `itt = InteractionBGD(HANDLE_OBJ)`，而
+# InteractionBGD.__init__ 会构造 InteractionNormal 与 PrintWindowCapture，
+# 后者又会经平台工厂创建截图管理器 —— 也就是说「import 这个模块」本身就
+# 已经在碰游戏窗口了。单元测试、静态检查、只想复用 capture() 的工具都会
+# 被这些副作用牵连（游戏没开时更是直接失败）。
+#
+# 改为 PEP 562 的模块级 __getattr__ 懒加载：第一次真正访问 itt 时才构造。
+# 61 处 `from whimbox.interaction.interaction_core import itt` 无需改动，
+# 因为 from-import 同样走模块属性查找，会命中 __getattr__。
+# ---------------------------------------------------------------------------
+_itt_lock = threading.Lock()
+_itt_singleton = None
+
+
+def get_itt():
+    """返回 InteractionBGD 单例，首次调用时才构造（线程安全）。"""
+    global _itt_singleton
+    if _itt_singleton is None:
+        with _itt_lock:
+            if _itt_singleton is None:
+                from whimbox.common.handle_lib import HANDLE_OBJ
+
+                _itt_singleton = InteractionBGD(HANDLE_OBJ)
+    return _itt_singleton
+
+
+def __getattr__(name):
+    """PEP 562：把模块属性 `itt` 的访问转成懒加载。"""
+    if name == "itt":
+        return get_itt()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 if __name__ == '__main__':

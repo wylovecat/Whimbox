@@ -1,0 +1,60 @@
+name: CI
+
+# P2 安全网：在打 wheel 之前先跑 lint 与测试。
+# 说明：
+# - lint 用 ubuntu 即可（ruff 是静态检查，不需要游戏窗口）。
+# - test 必须跑在 windows 上：项目依赖 pywin32 / pynput / onnxruntime，
+#   且 whimbox/platform/windows 才是真正被验证过的实现。
+# - 测试不依赖真实游戏：感知层用 assets 下的模板图与录制帧做断言，
+#   动作层不在 CI 覆盖范围内（有副作用，无法重复执行）。
+
+on:
+  push:
+    branches: [main, master, dev]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.8"
+
+      # 版本必须钉死：pyproject.toml 里的 [tool.ruff.lint] select 是按
+      # 当前规则集定义的，某个版本升级默认集变化会让门禁突然变红。
+      - name: Install ruff
+        run: pip install "ruff==0.16.10"
+
+      - name: Ruff check
+        run: ruff check .
+
+  test:
+    name: Test (Windows, Python 3.12.8)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.8"
+
+      # 用 -e . 安装，顺带验证 pyproject.toml 里声明的依赖是完整的
+      # （历史上 opencv-python / numpy / pydantic / websockets / pywin32
+      # 都只是靠传递依赖被装上，谁升级都可能把它们弄没）。
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+
+      - name: Run tests
+        run: python -m pytest -q

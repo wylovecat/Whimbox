@@ -323,18 +323,6 @@ def ensure_int(*args):
     return to_int(args)
 
 
-def float2str(n, decimal=3):
-    """
-    Args:
-        n (float):
-        decimal (int):
-
-    Returns:
-        str:
-    """
-    return str(round(n, decimal)).ljust(decimal + 2, "0")
-
-
 def point2str(x, y, length=4):
     """
     Args:
