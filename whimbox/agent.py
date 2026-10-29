@@ -51,6 +51,7 @@ class Agent:
         self.session_manager = None
         self._model_name = ""
         self._model_provider = ""
+        self._vision_warned = set()
 
         self._initialized = True
 
@@ -481,24 +482,81 @@ class Agent:
                 "session_id": session_id,
             }
 
+    # 已知支持图片输入的 provider（其主流模型均可接收 image block）
+    _VISION_PROVIDERS = frozenset({"anthropic", "google_genai", "google", "google-genai"})
+    # 已知支持图片输入的模型名关键字（小写子串匹配；name 需能被 provider 识别）
+    _VISION_MODEL_TOKENS = (
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-4-turbo",
+        "gpt-5",
+        "o1",
+        "o3",
+        "o4",
+        "vision",
+        "vl",  # qwen2-vl / qwen2.5-vl / 其它以 -vl 结尾的视觉模型
+        "glm-4v",
+        "internvl",
+        "llava",
+        "bakllava",
+        "minicpm-v",
+        "moondream",
+        "pixtral",
+        "step-1v",
+    )
+    _VISION_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+    _VISION_FALSE_VALUES = frozenset({"0", "false", "no", "off"})
+
+    def _vision_config_override(self) -> bool | None:
+        """读取 Agent.supports_vision 覆盖项；留空或无法识别时返回 None（走自动判定）。"""
+        raw = global_config.get("Agent", "supports_vision")
+        text = str(raw or "").strip().lower()
+        if text in self._VISION_TRUE_VALUES:
+            return True
+        if text in self._VISION_FALSE_VALUES:
+            return False
+        if text:
+            logger.warning(f"Agent.supports_vision 取值无法识别: {raw!r}，本次改用自动判定")
+        return None
+
     def supports_multimodal_input(self) -> bool:
-        # provider = self._model_provider.lower()
-        # model = self._model_name.lower()
-        # if not provider or not model:
-        #     return False
-        # if provider in {"anthropic", "google_genai"}:
-        #     return True
-        # if provider == "openai":
-        #     return any(token in model for token in ("gpt-4o", "gpt-4.1", "gpt-4-turbo", "o1", "o3", "o4"))
-        # if provider == "ollama":
-        #     return any(
-        #         token in model
-        #         for token in ("llava", "bakllava", "minicpm-v", "qwen2-vl", "qwen2.5-vl", "qwen2.5vl", "moondream", "gemma3", "pixtral", "internvl")
-        #     )
-        # if provider == "deepseek":
-        #     return "vl" in model or "vision" in model
-        # return False
-        return True
+        """当前模型能否接收图片输入（保守判定：宁可不发，也不乱发）。
+
+        判定顺序：
+        1. 配置覆盖：Agent.supports_vision=true/false 直接生效；
+        2. 自动判定：provider 或 model 命中已知视觉组合才返回 True；
+        3. 其余（含未配置模型、未知模型）返回 False，并打一条 warning，
+           提示用户可用 Agent.supports_vision 手动打开。
+        """
+        override = self._vision_config_override()
+        if override is not None:
+            return override
+
+        provider = str(self._model_provider or "").strip().lower()
+        model = str(self._model_name or "").strip().lower()
+        if provider in self._VISION_PROVIDERS:
+            return True
+        if provider == "deepseek":
+            # deepseek 只有 VL / vision 系列支持图片输入
+            if any(token in model for token in ("vl", "vision")):
+                return True
+        elif any(token in model for token in self._VISION_MODEL_TOKENS):
+            return True
+
+        self._warn_unknown_vision_model(provider, model)
+        return False
+
+    def _warn_unknown_vision_model(self, provider: str, model: str) -> None:
+        """同一个 (provider, model) 只告警一次，避免每轮对话刷屏。"""
+        key = (provider, model)
+        if key in self._vision_warned:
+            return
+        self._vision_warned.add(key)
+        logger.warning(
+            "当前模型未登记为支持图片输入，已按纯文本模型处理"
+            f"（provider={provider or '未配置'}, model={model or '未配置'}）；"
+            "如需向模型发送截图/图片，请设置 Agent.supports_vision=true。"
+        )
 
     def _contains_image_content(self, content: MessageContent) -> bool:
         if isinstance(content, str):

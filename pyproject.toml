@@ -7,7 +7,10 @@ name = "whimbox"
 version = "3.1.2"
 description = "奇想盒-AI游戏助手"
 readme = "README.md"
-requires-python = "==3.12.8"
+# 原本是 "==3.12.8"（钉到补丁号），结果是 3.12.9+ 的用户连 pip install 都被
+# 直接拒绝（uv 现在给的 3.12.13 就装不进去），而补丁号之间只有 bugfix 差异。
+# 已用 3.12.13 跑通完整测试套件（144 passed），故放宽到 3.12.x。
+requires-python = ">=3.12.8,<3.13"
 license-files = ["LICENSE"]
 authors = [
     {name = "nikkigallery"}
@@ -38,6 +41,14 @@ dependencies = [
     "psutil==7.1.0",
     "scipy==1.16.2",
     "watchdog==6.0.0",
+    # 以下包被代码直接 import，此前只靠其它依赖的传递依赖被间接安装，
+    # 一旦上游放宽依赖就会缺失，故显式声明。
+    "numpy==2.2.6",
+    "opencv-python==4.12.0.88",
+    "pillow==11.3.0",
+    "pydantic==2.11.10",
+    "websockets==15.0.1",
+    "pywin32==311; sys_platform == 'win32'",
     "win10toast==0.9; sys_platform == 'win32'",
     # Cross-platform screen capture (used on macOS)
     "mss>=9.0; sys_platform == 'darwin'",
@@ -65,5 +76,25 @@ include = ["whimbox*"]
 "*" = ["*.pyc", "__pycache__", "*.log"]
 # 排除开发测试用的原始地图文件
 "whimbox.assets" = ["imgs/Maps/w01_v11.png", "imgs/Maps/w01_v12.png", "imgs/Maps/w14000000_v2.png", "imgs/Maps/w8000001_v1.png", "imgs/Maps/w4020034.png"]
+
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = ["whimbox/dev_tool"]
+
+[tool.ruff.lint]
+# 门禁刻意只启用「这是真 bug」的规则类，保证从第一天起就是绿的：
+#   E9     语法错误
+#   F63/F7 无效的转义/格式串、语句层面错误
+#   F82    未定义名（NameError 的静态等价物）
+#   F811   重复定义（同名函数被定义两次，后者静默覆盖前者）
+# 不启用 F401/I001：本库大量使用 `from x import *`（F403/F405 会报上千条），
+# 且 import 顺序存在副作用耦合，贸然重排会改变行为；留待逐目录收紧。
+select = ["E9", "F63", "F7", "F82", "F811"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 
 

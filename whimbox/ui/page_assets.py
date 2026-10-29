@@ -52,7 +52,7 @@ ui_page_dict = {
     "换装": page_dress,
     "能力配置": page_ability,
     "小月卡临取1": page_daily_reward_1,
-    "小月卡临取1": page_daily_reward_2,
+    "小月卡临取2": page_daily_reward_2,
     "商城": page_shop,
     "共鸣": page_gacha,
     "演奏": page_play_music,

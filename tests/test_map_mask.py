@@ -26,7 +26,8 @@ from whimbox.map.mask.coordinate import point_to_visible, point_to_visible_in_ci
 from whimbox.map.mask.local_provider import LocalJsonProvider
 from whimbox.map.mask.minimap_tracker import MiniMapPositionTracker
 from whimbox.map.mask.models import MapMaskPoint, MapMaskViewport
-from whimbox.map.mask.pearpal_provider import OfficialPearPalProvider
+from whimbox.map.mask.pearpal_provider import OfficialPearPalProvider, _WORLDS
+from whimbox.interaction import interaction_core as interaction_core_module
 from whimbox.map.mask.pearpal_auth import (
     PearPalAwardedState,
     PearPalCredentials,
@@ -546,7 +547,12 @@ class PearPalUserStateTests(unittest.TestCase):
             "pearpal-public-idle",
         )
         self.assertEqual(len(provider.list_points()), 4)
-        self.assertEqual(client.fetch_catalog.call_count, 2)
+        # 每次加载会为 _WORLDS 里的每个世界各拉一次目录；本用例触发两次加载
+        # （初始 list_points 一次 + 切服后重建一次），所以期望是 2 × 世界数。
+        # 原先写死 2，是「只有一个世界」时的期望值 —— 2026-09-29（ebb3ee5）加入
+        # wanxiang 世界后就过期了，而当时没有 CI 跑测试，没人发现。按世界数计算
+        # 可以让它在下次加世界时自动跟上，而不是再红一次。
+        self.assertEqual(client.fetch_catalog.call_count, 2 * len(_WORLDS))
 
     def test_clear_login_information_removes_backend_session(self) -> None:
         credentials = PearPalCredentials(
@@ -1009,7 +1015,11 @@ class MiniMapCoordinateTests(unittest.TestCase):
 
         self.assertIsNotNone(center)
         assert center is not None
-        self.assertEqual((center.screen_x, center.screen_y), (181.0, 122.0))
+        # 屏幕坐标是「地图像素 × 视口缩放」算出来的浮点数，必然带舍入噪声
+        # （实际得到 181.00000000000006 / 122.00000000000004），
+        # 逐位相等是不成立的断言，改为按 6 位小数比较。
+        self.assertAlmostEqual(center.screen_x, 181.0, places=6)
+        self.assertAlmostEqual(center.screen_y, 122.0, places=6)
         self.assertIsNone(corner)
 
 
@@ -1071,37 +1081,49 @@ class AutomaticViewportTrackingTests(unittest.TestCase):
 
     def test_low_confidence_log_is_emitted_once_until_recovery(self) -> None:
         provider = HybridAutoCenterViewportProvider(Mock())
+        # 阈值是可配置的（默认值历史上从 0.3 改成过 0.15），原用例把 0.2 / 0.29
+        # 当成「低置信度」写死，阈值一变就失效（0.2 反而高于 0.15，压根不算低）。
+        # 这里按当前阈值推算，既保住用例本意（恢复前只告警一次），又不会再漂移。
+        threshold = provider._confidence_threshold
+        first_low = round(threshold * 0.9, 3)
+        still_low = round(threshold * 0.5, 3)
+        recovered = round(threshold + 0.2, 3)
+        second_low = round(threshold * 0.95, 3)
         with patch(
             "whimbox.map.mask.auto_viewport_provider.logger.warning"
         ) as warning:
+            # 第一次低置信度：告警
             provider._log_low_confidence_if_needed(
-                0.2,
+                first_low,
                 selected_match_source="global-top1",
                 local_confidence=None,
-                global_confidence=0.2,
+                global_confidence=first_low,
             )
+            # 仍然低：属于同一段故障，压掉
             provider._log_low_confidence_if_needed(
-                0.1,
+                still_low,
                 selected_match_source="global-top1",
                 local_confidence=None,
-                global_confidence=0.1,
+                global_confidence=still_low,
             )
+            # 恢复正常：状态复位
             provider._log_low_confidence_if_needed(
-                0.5,
+                recovered,
                 selected_match_source="local",
-                local_confidence=0.5,
+                local_confidence=recovered,
                 global_confidence=None,
             )
+            # 再次变低：应该再告警一次
             provider._log_low_confidence_if_needed(
-                0.29,
+                second_low,
                 selected_match_source="local",
-                local_confidence=0.29,
+                local_confidence=second_low,
                 global_confidence=None,
             )
 
         self.assertEqual(warning.call_count, 2)
-        self.assertIn("confidence=0.200", warning.call_args_list[0].args[0])
-        self.assertIn("threshold=0.300", warning.call_args_list[0].args[0])
+        self.assertIn(f"confidence={first_low:.3f}", warning.call_args_list[0].args[0])
+        self.assertIn(f"threshold={threshold:.3f}", warning.call_args_list[0].args[0])
 
     def test_unsupported_zoom_is_not_replaced_by_manual_fallback(self) -> None:
         provider = MapMaskViewportProvider()
@@ -1606,22 +1628,47 @@ class DetectionWorkerLifecycleTests(unittest.TestCase):
         self.assertIsNone(service._detection_thread)
         self.assertIsNone(service._get_detection_snapshot())
 
-        service.get_visible_points()
-        deadline = time.monotonic() + 1.0
-        while service._get_detection_snapshot() is None and time.monotonic() < deadline:
-            time.sleep(0.01)
+        # worker 的采集链路（itt.capture → region_detector → minimap_tracker）原先
+        # 完全没有被 stub：没开游戏时 itt.capture() 返回 None，后面几步必然抛异常，
+        # 快照永远写不回来，用例在无游戏的机器上必然失败（在作者开着游戏的机器上
+        # 反而可能"通过"，所以一直没人发现）。这里把采集链路整体隔离，只保留
+        # 本用例真正要验证的东西：worker 的启动、回写快照、禁用后退出。
+        fake_itt = Mock()
+        fake_itt.capture = Mock(return_value=np.zeros((1080, 1920, 4), dtype=np.uint8))
+        # 注意不能直接 Mock(return_value=None)：_build_state 会读
+        # minimap_snapshot.status / .viewport，None 会在后面炸掉。用 tracker 自己
+        # 的 snapshot() 造一个中性快照，避免依赖真实图像匹配。
+        neutral_minimap = service.minimap_tracker.snapshot(
+            is_main_world_open=False,
+            screen_width=1920,
+            screen_height=1080,
+        )
+        service.minimap_tracker.update = Mock(return_value=neutral_minimap)
+        service.official_provider.note_overlay_activity = Mock()
+        service._try_calibrate_minimap = Mock()
 
-        snapshot = service._get_detection_snapshot()
-        self.assertIsNotNone(snapshot)
-        worker = service._detection_thread
-        self.assertIsNotNone(worker)
-        assert worker is not None
-        self.assertTrue(worker.is_alive())
+        # patch.dict 而不是 patch.object：patch.object 取旧值时会触发
+        # interaction_core 的模块级 __getattr__，把真实 InteractionBGD 构造出来。
+        with patch.dict(vars(interaction_core_module), {"itt": fake_itt}):
+            service.get_visible_points()
+            deadline = time.monotonic() + 1.0
+            while (
+                service._get_detection_snapshot() is None
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
 
-        service.set_enabled(False)
-        worker.join(timeout=1.0)
-        self.assertFalse(worker.is_alive())
-        self.assertIsNone(service._get_detection_snapshot())
+            snapshot = service._get_detection_snapshot()
+            self.assertIsNotNone(snapshot)
+            worker = service._detection_thread
+            self.assertIsNotNone(worker)
+            assert worker is not None
+            self.assertTrue(worker.is_alive())
+
+            service.set_enabled(False)
+            worker.join(timeout=1.0)
+            self.assertFalse(worker.is_alive())
+            self.assertIsNone(service._get_detection_snapshot())
 
     def test_worker_exits_after_request_timeout_and_restarts_on_next_request(self) -> None:
         service = MapMaskService()

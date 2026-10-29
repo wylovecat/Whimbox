@@ -52,8 +52,8 @@ class WindowsGraphicsCapture(Capture):
     支持Windows 10 1903及以上版本
     """
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, hwnd_handler):
+        super().__init__(hwnd_handler)
         self.max_fps = 30
         self.device = get_direct3d_device()
         self.item = create_for_window(HANDLE_OBJ.get_handle())
