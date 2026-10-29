@@ -1,0 +1,113 @@
+{
+  "frame": "frame_00.jpg",
+  "note": "InteractionBGD 感知层公开 API 的输出基线，由 record_perception_api_baseline.py 生成",
+  "probe_count": 61,
+  "probes": {
+    "capture.crop_shape": [
+      50,
+      100,
+      3
+    ],
+    "capture.full_shape": [
+      1080,
+      1920,
+      3
+    ],
+    "get_screen_center": [
+      960,
+      1706
+    ],
+    "icon.ButtonAbilityChangeList.appear": false,
+    "icon.ButtonAbilityChangeList.bool": false,
+    "icon.ButtonAbilityChangeList.posi": null,
+    "icon.ButtonAbilityChangeList.rate": 0.0,
+    "icon.ButtonAbilityConfig.appear": false,
+    "icon.ButtonAbilityConfig.bool": false,
+    "icon.ButtonAbilityConfig.posi": null,
+    "icon.ButtonAbilityConfig.rate": 0.782,
+    "icon.ButtonAbilitySave.appear": false,
+    "icon.ButtonAbilitySave.bool": false,
+    "icon.ButtonAbilitySave.posi": null,
+    "icon.ButtonAbilitySave.rate": 0.862,
+    "icon.ButtonBigMapZoom.appear": false,
+    "icon.ButtonBigMapZoom.bool": false,
+    "icon.ButtonBigMapZoom.posi": null,
+    "icon.ButtonBigMapZoom.rate": 0.938,
+    "icon.ButtonBlessHuanjingNumMax.appear": false,
+    "icon.ButtonBlessHuanjingNumMax.bool": false,
+    "icon.ButtonBlessHuanjingNumMax.posi": null,
+    "icon.ButtonBlessHuanjingNumMax.rate": 0.943,
+    "icon.ButtonBlessHuanjingQuickPlay.appear": false,
+    "icon.ButtonBlessHuanjingQuickPlay.bool": false,
+    "icon.ButtonBlessHuanjingQuickPlay.posi": null,
+    "icon.ButtonBlessHuanjingQuickPlay.rate": 0.735,
+    "icon.ButtonDigAgain.appear": false,
+    "icon.ButtonDigAgain.bool": false,
+    "icon.ButtonDigAgain.posi": null,
+    "icon.ButtonDigAgain.rate": 0.882,
+    "icon.ButtonDigConfirm.appear": false,
+    "icon.ButtonDigConfirm.bool": false,
+    "icon.ButtonDigConfirm.posi": null,
+    "icon.ButtonDigConfirm.rate": 0.869,
+    "icon.ButtonDigGather.appear": false,
+    "icon.ButtonDigGather.bool": false,
+    "icon.ButtonDigGather.posi": null,
+    "icon.ButtonDigGather.rate": 0.806,
+    "icon.ButtonDigGatherConfirm.appear": false,
+    "icon.ButtonDigGatherConfirm.bool": false,
+    "icon.ButtonDigGatherConfirm.posi": null,
+    "icon.ButtonDigGatherConfirm.rate": 0.921,
+    "icon.ButtonDigTime20h.appear": false,
+    "icon.ButtonDigTime20h.bool": false,
+    "icon.ButtonDigTime20h.posi": null,
+    "icon.ButtonDigTime20h.rate": 0.878,
+    "icon.ButtonDungeonQuitOK.appear": false,
+    "icon.ButtonDungeonQuitOK.bool": false,
+    "icon.ButtonDungeonQuitOK.posi": null,
+    "icon.ButtonDungeonQuitOK.rate": 0.882,
+    "ocr.detect_posi": {
+      "1013米": [
+        137.0,
+        139.0,
+        200.0,
+        161.0
+      ],
+      "· 在帕克亚湖心岛附近和": [
+        125.0,
+        88.0,
+        332.0,
+        113.0
+      ],
+      "多米巴巴会合": [
+        138.0,
+        112.0,
+        257.0,
+        137.0
+      ],
+      "迷雾中的启程": [
+        116.0,
+        51.0,
+        269.0,
+        83.0
+      ]
+    },
+    "ocr.multiple_lines": [
+      "M",
+      "迷雾中的启程",
+      "· 在帕克亚湖心岛附近和",
+      "多米巴巴会合",
+      "1013米"
+    ],
+    "ocr.single_line": "M迷雾中的启程· 在帕克亚湖心岛附近和多米巴巴会合1013米",
+    "text.probe_missing_text.appear": false,
+    "text.probe_missing_text.bool": false,
+    "text.probe_missing_text.posi": null,
+    "text.probe_present_text.appear": true,
+    "text.probe_present_text.bool": true,
+    "text.probe_present_text.posi": [
+      225.0,
+      315.0
+    ],
+    "wait_until_stable": null
+  }
+}

@@ -4,7 +4,7 @@ import time
 from whimbox.common.handle_lib import HANDLE_OBJ
 from whimbox.common.logger import logger
 from whimbox.common.notification import send_notification
-from whimbox.rpc_server import notify_event
+from whimbox.event_bus import emit_event
 from whimbox.common.scripts_manager import scripts_manager
 from whimbox.task.common_task.start_game_task import StartGameTask
 from whimbox.task.common_task.goto_ui_task import GotoUITask
@@ -54,7 +54,7 @@ def _check_game_ok(session_id: str = "default") -> Dict[str, Any]:
             "推荐使用1920x1080或1920x1200或2560x1440或2560x1600分辨率，窗口模式。"
             "如遇到bug，请修改游戏分辨率和显示模式后重试\n"
         )
-        notify_event(
+        emit_event(
             "event.run.log",
             {
                 "session_id": session_id,

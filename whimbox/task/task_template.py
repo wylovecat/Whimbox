@@ -6,6 +6,7 @@ from whimbox.common.cvars import (
 )
 from whimbox.config.config import global_config
 from whimbox.common.cvars import get_current_run_id
+from whimbox.event_bus import emit_event
 
 from pynput import keyboard
 import sys
@@ -334,9 +335,10 @@ class TaskTemplate:
                 msg = f"❌ {msg}"
                 level = "error"
 
-        from whimbox.rpc_server import notify_event
-
-        notify_event(
+        # 走 event_bus 而不是直接 import rpc_server：任务层不该反向依赖接入层，
+        # 否则 task ← rpc_server ← rpc_method_groups ← task 形成循环导入。
+        # rpc_server 启动时会 set_notifier(notify_event)，语义与直接调用一致。
+        emit_event(
             "event.run.log",
             {
                 "session_id": self.session_id,

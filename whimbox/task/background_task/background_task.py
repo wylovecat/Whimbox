@@ -19,6 +19,7 @@ from whimbox.ability.ability import ability_manager
 from whimbox.ability.cvar import ABILITY_NAME_FLOURISH, ABILITY_NAME_INSECT
 from whimbox.config.config import global_config
 from whimbox.config.default_config import DEFAULT_CONFIG
+from whimbox.event_bus import emit_event
 from whimbox.tool_invocation_coordinator import tool_invocation_coordinator
 
 
@@ -273,10 +274,9 @@ class BackgroundTask:
                 msg = f"✅ {msg}"
                 level = "info"
 
-        from whimbox.rpc_server import notify_event
-
+        # 走 event_bus 解耦接入层（详见 task_template.py 同一处注释）
         session_id = self._resolve_session_id()
-        notify_event(
+        emit_event(
             "event.run.log",
             {
                 "session_id": session_id,
@@ -301,8 +301,6 @@ class BackgroundTask:
         error: str = "",
         ui_behavior: str | None = None,
     ):
-        from whimbox.rpc_server import notify_event
-
         resolved_ui_behavior = ui_behavior or (
             "silent" if tool_id == "background.auto_dialogue" else "game_overlay"
         )
@@ -320,7 +318,7 @@ class BackgroundTask:
             payload["result"] = result
         if error:
             payload["error"] = error
-        notify_event("event.run.status", payload)
+        emit_event("event.run.status", payload)
 
     def _try_enter_background_tool(self, *, session_id: str, tool_id: str):
         owner = f"background:{session_id}:{tool_id}"

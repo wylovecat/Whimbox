@@ -1,0 +1,117 @@
+{
+  "captured_at": "2026-10-30T00:52:19",
+  "note": "由 tests/tools/record_perception_golden.py 自动生成，请勿手工编辑",
+  "frames": [
+    "frame_00.jpg"
+  ],
+  "baselines": {
+    "frame_00.jpg": {
+      "shape": [
+        1080,
+        1920,
+        3
+      ],
+      "mean": 50.664,
+      "regions": {
+        "minimap": {
+          "mean": 102.016,
+          "std": 58.905,
+          "shape": [
+            250,
+            240,
+            3
+          ]
+        },
+        "quest_tracker": {
+          "mean": 56.186,
+          "std": 51.034,
+          "shape": [
+            170,
+            390,
+            3
+          ]
+        },
+        "top_right_menu": {
+          "mean": 71.381,
+          "std": 65.434,
+          "shape": [
+            110,
+            850,
+            3
+          ]
+        },
+        "character": {
+          "mean": 47.466,
+          "std": 16.872,
+          "shape": [
+            460,
+            400,
+            3
+          ]
+        },
+        "bottom_bar": {
+          "mean": 56.236,
+          "std": 47.079,
+          "shape": [
+            115,
+            1300,
+            3
+          ]
+        },
+        "left_skills": {
+          "mean": 43.742,
+          "std": 24.499,
+          "shape": [
+            400,
+            120,
+            3
+          ]
+        }
+      },
+      "icons": {
+        "ButtonAbilityChangeList": "error: error: OpenCV(4.12.0) D:\\a\\opencv-python\\opencv-python\\opencv\\modules\\imgproc\\src\\templmatch.cpp:1168: error: (-215:Assertion failed) (depth == CV_8U || depth == CV_32F) && type == _templ.type() && _img.dims() <= 2 in function 'cv::matchTemplate'\n",
+        "ButtonAbilityConfig": 0.98,
+        "ButtonAbilitySave": 0.9575,
+        "ButtonBigMapZoom": 0.9831,
+        "ButtonBlessHuanjingNumMax": 0.9851,
+        "ButtonBlessHuanjingQuickPlay": 0.9561,
+        "ButtonDigAgain": 0.9605,
+        "ButtonDigConfirm": 0.9667,
+        "ButtonDigGather": 0.9072,
+        "ButtonDigGatherConfirm": 0.948,
+        "ButtonDigTime20h": 0.9442,
+        "ButtonDungeonQuitOK": 0.9779
+      },
+      "ocr_lines": [
+        "FSC",
+        "F12",
+        "0",
+        "商城",
+        "共鸣",
+        "奇迹之旅活动大厅奇想日历无限之心",
+        "任务",
+        "设计图",
+        "换装",
+        "CapsLuck",
+        "M",
+        "迷雾中的启程",
+        "在帕克亚湖心岛附近和",
+        "多米巴巴会合",
+        "1013米",
+        "（可选目标）看看美鸭",
+        "梨菇且一战的消息",
+        "分析当的项厅",
+        "工具佩用·ops hash",
+        "Frler",
+        "心誓8",
+        "x2",
+        "Q+Q",
+        "TAB",
+        "Q",
+        "L.Shift",
+        "UID104783246",
+        "29ms"
+      ]
+    }
+  }
+}

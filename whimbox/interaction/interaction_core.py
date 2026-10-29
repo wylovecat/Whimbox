@@ -1,28 +1,47 @@
+"""动作层与感知层的组合门面（历史上的「神对象」）。
+
+拆分背景
+--------
+本模块原本同时实现感知（截图/OCR/模板匹配）与动作（点击/按键/滚轮）。
+感知部分已抽到 :mod:`whimbox.interaction.perception`，这里保留同名方法作为
+**委托**，因此 61 处 ``from whimbox.interaction.interaction_core import itt``
+以及所有 ``itt.capture()`` / ``itt.get_img_existence()`` 调用点都无需改动。
+
+为什么要拆：感知是纯读操作、不需要锁、不需要窗口焦点，而动作会抢焦点并且必须
+串行化；混在一起导致「只想截一帧」的代码（地图遮罩检测线程、离线分析、单元测试）
+也不得不构造输入注入器。详见 perception.py 的模块文档。
+
+分工约定
+--------
+- 感知方法（capture / ocr_* / get_*_existence / appear / wait_until_stable /
+  save_snapshot）在本类里只有一行委托，实现全部在 ``Perception``；
+- 动作方法（appear_then_click / click / key_* / move_* / delay）留在本类，
+  因为它们要经过 ``before_operation``（抢焦点 + 商城抽卡界面拦截）与
+  ``operation_lock``（串行化）。
+
+行为等价：感知层有一份逐键的输出基线（tests/fixtures/perception/api_baseline.json），
+由 ``tests/test_perception_api_baseline.py`` 回放比对，拆分前后必须完全一致。
+"""
+import cv2
 import inspect
 import math
+import os
 import random
 import threading
 import time
-import cv2
-import os
 
 from whimbox.common import path_lib
-from whimbox.ui.template import img_manager, text_manager, posi_manager
-from whimbox.common.timer_module import TimeoutTimer, AdvanceTimer
 from whimbox.common.cvars import *
-from whimbox.common.path_lib import ROOT_PATH
 from whimbox.common.logger import logger, get_logger_format_date
-from whimbox.common.utils.img_utils import crop, process_with_hsv_limit, similar_img, add_padding
-from whimbox.config.config import global_config
-from whimbox.ui.ui_assets import IconShopFeature, IconGachaFeature
+from whimbox.common.path_lib import ROOT_PATH
+from whimbox.common.timer_module import AdvanceTimer, TimeoutTimer
 from whimbox.common.utils.asset_utils import AnchorPosi
-
-ocr_type = global_config.get('General', 'ocr')
-if ocr_type == 'rapid':
-    from whimbox.api.ocr_rapid import ocr
-else:
-    raise ValueError(f"ocr配置错误：{ocr_type}")
-
+from whimbox.common.utils.img_utils import add_padding, crop, process_with_hsv_limit, similar_img
+from whimbox.config.config import global_config
+from whimbox.interaction.perception import Perception
+from whimbox.interaction.perception import ocr  # noqa: F401 - 保持历史导入路径可用
+from whimbox.ui.template import img_manager, posi_manager, text_manager
+from whimbox.ui.ui_assets import IconGachaFeature, IconShopFeature
 
 
 class InteractionBGD:
@@ -42,163 +61,54 @@ class InteractionBGD:
         self.itt_exec = whimbox.interaction.interaction_normal.InteractionNormal(self.hwnd_handler)
         from whimbox.interaction.capture import PrintWindowCapture
         self.capture_obj = PrintWindowCapture(self.hwnd_handler)
+        # 感知能力独立成对象：只依赖 capture_obj，构造它不会创建任何输入注入器
+        self.perception = Perception(self.capture_obj)
 
-
+    # ------------------------------------------------------------------
+    # 感知层委托（实现见 whimbox/interaction/perception.py）
+    # ------------------------------------------------------------------
     def capture(self, anchor_posi: AnchorPosi=None, jpgmode=NORMAL_CHANNELS):
-        """窗口客户区截图
-
-        Args:
-            posi ( AnchorPosi ): 截图区域的坐标, y2>y1,x2>x1. 全屏截图时为None。
-            jpgmode(int): 
-                0:return jpg (3 channels, delete the alpha channel)
-                1:return nikki background channel, background color is black
-                2:return nikki ui channel, background color is black
-
-        Returns:
-            numpy.ndarray: 图片数组
-        """
-
-        ret = self.capture_obj.capture()
-        if anchor_posi is not None:
-            ret = crop(ret, anchor_posi)
-        if ret.shape[2]==3:
-            pass
-        elif jpgmode == NORMAL_CHANNELS:
-            ret = ret[:, :, :3]
-        elif jpgmode == FOUR_CHANNELS:
-            return ret
-        return ret
+        """窗口客户区截图，实现见 Perception.capture。"""
+        return self.perception.capture(anchor_posi=anchor_posi, jpgmode=jpgmode)
 
     def get_screen_center(self):
-        resolution = self.capture_obj.resolution
-        if resolution:
-            x = 1920/2
-            y = 1920/2 * resolution[0]/resolution[1]
-            print(x, y)
-            return(int(x), int(y))
-        else:
-            return (1920/2, 1080/2)
+        return self.perception.get_screen_center()
 
     def ocr_single_line(self, area: posi_manager.Area, padding=50, hsv_limit=None, cap=None) -> str:
-        if cap is None:
-            cap = self.capture(anchor_posi=area.position)
-        else:
-            cap = crop(cap, area.position)
-        if hsv_limit:
-            cap = process_with_hsv_limit(cap, hsv_limit[0], hsv_limit[1])
-        if padding:
-            cap = add_padding(cap, padding)
-        res = ocr.get_all_texts(cap, mode=1)
-        return res
+        return self.perception.ocr_single_line(area, padding=padding, hsv_limit=hsv_limit, cap=cap)
 
     def ocr_multiple_lines(self, area: posi_manager.Area, padding=50, hsv_limit=None) -> list:
-        cap = self.capture(anchor_posi = area.position)
-        if hsv_limit:
-            cap = process_with_hsv_limit(cap, hsv_limit[0], hsv_limit[1])
-        if padding:
-            cap = add_padding(cap, padding)
-        res = ocr.get_all_texts(cap, mode=0)
-        return res
+        return self.perception.ocr_multiple_lines(area, padding=padding, hsv_limit=hsv_limit)
 
     def ocr_and_detect_posi(self, area: posi_manager.Area, padding=50, hsv_limit=None, cap=None, show_res=False):
-        if cap is None:
-            cap = self.capture(anchor_posi=area.position)
-        else:
-            cap = crop(cap, area.position)
-        if hsv_limit:
-            cap = process_with_hsv_limit(cap, hsv_limit[0], hsv_limit[1])
-        if padding:
-            cap = add_padding(cap, padding)
-        res = ocr.detect_and_ocr(cap, show_res)
-        if padding:
-            for text, box in res.items():
-                res[text] = [
-                    box[0] - padding, 
-                    box[1] - padding, 
-                    box[2] - padding, 
-                    box[3] - padding]
-        return res
-
-
-    # def get_img_position(self, imgicon: img_manager.ImgIcon) -> list:
-    #     upper_func_name = inspect.getframeinfo(inspect.currentframe().f_back)[2]
-    #     cap = self.capture(posi=imgicon.cap_posi)
-    #     matching_rate, max_loc = similar_img(cap, imgicon.image, ret_mode=IMG_POSI)
-    #     bbox = Bbox(imgicon.cap_posi[0], imgicon.cap_posi[1], imgicon.cap_posi[0]+max_loc[0], imgicon.cap_posi[1]+max_loc[1])
-    #     if imgicon.is_print_log(matching_rate >= imgicon.threshold):
-    #         logger.trace('imgname: ' + imgicon.name + 'max_loc: ' + str(max_loc) + ' |function name: ' + upper_func_name)
-
-    #     if matching_rate >= imgicon.threshold:
-    #         return bbox
-    #     else:
-    #         return None
-
+        return self.perception.ocr_and_detect_posi(
+            area, padding=padding, hsv_limit=hsv_limit, cap=cap, show_res=show_res)
 
     def get_img_existence(self, imgicon: img_manager.ImgIcon, is_gray=False, ret_mode = IMG_BOOL, show_res = False, cap = None):
-        """检测图片是否存在
+        """检测图片是否存在。
 
-        Args:
-            imgicon (img_manager.ImgIcon): imgicon对象
-            is_gray (bool, optional): 是否启用灰度匹配. Defaults to False.
-            is_log (bool, optional): 是否打印日志. Defaults to False.
-
-        Returns:
-            bool: bool
+        这里显式把调用者函数名传给感知层：日志里记的是「谁调用了感知」，一旦经过
+        委托层，感知层里 inspect 拿到的栈帧就会变成这个委托方法本身。
         """
-        upper_func_name = inspect.getframeinfo(inspect.currentframe().f_back)[2]
-        if cap is None:
-            cap = self.capture(anchor_posi=imgicon.cap_posi)
-        if imgicon.hsv_limit is not None:
-            cap = process_with_hsv_limit(cap, imgicon.hsv_limit[0], imgicon.hsv_limit[1])
-        elif imgicon.gray_limit is not None:
-            cap = cv2.cvtColor(cap, cv2.COLOR_BGRA2GRAY)
-            _, cap = cv2.threshold(cap, imgicon.gray_limit[0], imgicon.gray_limit[1], cv2.THRESH_BINARY)
-        matching_rate = similar_img(cap, imgicon.image, is_gray=is_gray, is_show_res=show_res)
-
-        if imgicon.is_print_log(matching_rate >= imgicon.threshold):
-            logger.trace(
-                'imgname: ' + imgicon.name + ' matching_rate: ' + str(
-                    matching_rate) + ' |function name: ' + upper_func_name)
-
-        if ret_mode == IMG_BOOLRATE:
-            if matching_rate >= imgicon.threshold:
-                return matching_rate
-            else:
-                return False
-        elif ret_mode == IMG_RATE:
-            return matching_rate
-        elif ret_mode == IMG_POSI:
-            if matching_rate >= imgicon.threshold:
-                return imgicon.cap_center_position_xy
-            else:
-                return None
-        else:
-            return matching_rate >= imgicon.threshold
-
+        caller_name = inspect.getframeinfo(inspect.currentframe().f_back)[2]
+        return self.perception.get_img_existence(
+            imgicon, is_gray=is_gray, ret_mode=ret_mode, show_res=show_res, cap=cap, caller_name=caller_name)
 
     def get_text_existence(self, textobj: text_manager.TextTemplate, ret_mode=IMG_BOOL, cap=None):
-        if cap == None:
-            cap = self.capture(anchor_posi=textobj.cap_area.position)
-        cap = add_padding(cap, 50)
-        res = ocr.get_all_texts(cap)
-        is_exist = textobj.match_results(res)
-        if textobj.is_print_log(is_exist):
-            logger.trace(f"get_text_existence: text: {textobj.text} {'Found' if is_exist else 'Not Found'}")
-        if ret_mode==IMG_POSI:
-            if is_exist:
-                return textobj.cap_area.center_position()
-            else:
-                return None
-        else:
-            return is_exist
-
+        return self.perception.get_text_existence(textobj, ret_mode=ret_mode, cap=cap)
 
     def appear(self, obj):
-        if isinstance(obj, text_manager.TextTemplate):
-            return self.get_text_existence(obj)
-        elif isinstance(obj, img_manager.ImgIcon): # Button is also an Icon
-            return self.get_img_existence(obj)
+        return self.perception.appear(obj)
 
+    def wait_until_stable(self, threshold = 0.9995, timeout = 5):
+        return self.perception.wait_until_stable(threshold=threshold, timeout=timeout)
+
+    def save_snapshot(self, reason:str = ''):
+        return self.perception.save_snapshot(reason=reason)
+
+    # ------------------------------------------------------------------
+    # 动作层
+    # ------------------------------------------------------------------
 
     def appear_then_click(self, inputvar, is_gray=False, key_name="left_mouse"):
         """appear then click
@@ -207,22 +117,22 @@ class InteractionBGD:
             inputvar (img_manager.ImgIcon/text_manager.TextTemplate/button_manager.Button)
             is_gray (bool, optional): 是否启用灰度匹配. Defaults to False.
             key_name (str, optional): 按键名称. Defaults to "left_mouse".
-            
+
         Returns:
             bool: bool,点击操作是否成功
         """
-        
+
         upper_func_name = inspect.getframeinfo(inspect.currentframe().f_back)[2]
         match_position = None
 
         if isinstance(inputvar, img_manager.ImgIcon):
             match_position = self.get_img_existence(inputvar, is_gray=is_gray, ret_mode=IMG_POSI)
             anchor = inputvar.cap_posi.anchor
-            
+
         elif isinstance(inputvar, text_manager.TextTemplate):
             match_position = self.get_text_existence(inputvar, ret_mode=IMG_POSI)
             anchor = inputvar.cap_area.anchor
-        
+
         if match_position:
             logger.trace(f"appear then click: True: {inputvar.name} func: {upper_func_name}")
             if key_name == "left_mouse":
@@ -234,29 +144,6 @@ class InteractionBGD:
             return True
         else:
             return False
-                
-
-    def wait_until_stable(self, threshold = 0.9995, timeout = 5):
-        timeout_timer = TimeoutTimer(timeout)
-        last_cap = self.capture()
-
-        pt = time.time()
-        t = AdvanceTimer(0.25, 3).start()
-        while 1:
-            time.sleep(0.1)
-            if timeout_timer.istimeout():
-                logger.warning("TIMEOUT")
-                break
-            curr_img = self.capture()
-            simi = similar_img(last_cap, curr_img)# abs((last_cap.astype(int)-curr_img.astype(int))).sum()
-            if simi > threshold:
-                pass
-            else:
-                t.reset()
-            if t.reached():
-                if DEBUG_MODE: print('wait time: ', time.time()-pt)
-                break
-            last_cap = curr_img.copy()
 
 
     def delay(self, x, randtime=False, is_log=True, comment=''):
@@ -303,10 +190,10 @@ class InteractionBGD:
                     func_name = inspect.getframeinfo(inspect.currentframe().f_back)[2]
                     func_name_2 = inspect.getframeinfo(inspect.currentframe().f_back.f_back)[2]
                     logger.trace(f" operation: {func.__name__} | args: {args} | {kwargs} | function name: {func_name} & {func_name_2}")
-                
+
                 if not self._can_interact(func.__name__):
                     raise Exception("中断操作：误入商城和抽卡界面")
-                
+
                 if not self.hwnd_handler.is_foreground():
                     # stop_flag = get_current_stop_flag()
                     # while True:
@@ -366,7 +253,7 @@ class InteractionBGD:
     def middle_click(self):
         """点击鼠标中键"""
         self.itt_exec.middle_click()
-    
+
     @before_operation()
     def middle_scroll(self, distance):
         """滚动鼠标中键"""
@@ -467,14 +354,7 @@ class InteractionBGD:
                 self.itt_exec.right_click()
             elif type == 'middle':
                 self.itt_exec.middle_click()
-        
-            
-    def save_snapshot(self, reason:str = ''):
-        img = self.capture()
-        img_path = os.path.join(path_lib.LOG_PATH, f"{time.time()}.jpg")
-        # img_path = os.path.join(ROOT_PATH, "Logs", get_logger_format_date(), f"{reason} | {time.strftime('%H-%M-%S', time.localtime())}.jpg")
-        logger.warning(f"Snapshot saved to {img_path}")
-        cv2.imwrite(img_path, img)        
+
 
 # ---------------------------------------------------------------------------
 # 模块级单例 itt（延迟构造）
