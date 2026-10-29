@@ -370,9 +370,8 @@ class InteractionBGD:
     @before_operation()
     def middle_scroll(self, distance):
         """滚动鼠标中键"""
-        self.operation_lock.acquire()
-        self.itt_exec.middle_scroll(distance)
-        self.operation_lock.release()
+        with self.operation_lock:
+            self.itt_exec.middle_scroll(distance)
 
     @before_operation()
     def key_down(self, key):
@@ -430,16 +429,15 @@ class InteractionBGD:
             position (list): 坐标
             relative (bool): 是否为相对移动。
         """
-        self.operation_lock.acquire()
-        self.itt_exec.move_to(
-            int(position[0]), 
-            int(position[1]),
-            resolution=self.capture_obj.resolution,
-            anchor=anchor,
-            relative=relative,
-            smooth=smooth,
-            smooth_duration=smooth_duration)
-        self.operation_lock.release()
+        with self.operation_lock:
+            self.itt_exec.move_to(
+                int(position[0]),
+                int(position[1]),
+                resolution=self.capture_obj.resolution,
+                anchor=anchor,
+                relative=relative,
+                smooth=smooth,
+                smooth_duration=smooth_duration)
 
 
     @before_operation()
@@ -451,22 +449,24 @@ class InteractionBGD:
             type (str, optional): 点击类型。 Defaults to 'left'.
             delay (float, optional): 延迟时间. Defaults to 0.2.
         """
-        self.operation_lock.acquire()
-        self.itt_exec.move_to(
-            int(position[0]), 
-            int(position[1]), 
-            resolution=self.capture_obj.resolution,
-            anchor=anchor,
-            relative=False)
-        self.operation_lock.release()
-        time.sleep(delay)
+        # 移动与点击必须在同一把锁内完成：否则其它线程可能在两者之间插入移动，
+        # 导致点击落在错误坐标上。因此这里的 delay 也留在临界区内
+        # （delay 为 0.3s 量级，且输入线程本身已由该锁串行化）。
+        with self.operation_lock:
+            self.itt_exec.move_to(
+                int(position[0]),
+                int(position[1]),
+                resolution=self.capture_obj.resolution,
+                anchor=anchor,
+                relative=False)
+            time.sleep(delay)
 
-        if type == 'left':
-            self.itt_exec.left_click()
-        elif type == 'right':
-            self.itt_exec.right_click()
-        elif type == 'middle':
-            self.itt_exec.middle_click()
+            if type == 'left':
+                self.itt_exec.left_click()
+            elif type == 'right':
+                self.itt_exec.right_click()
+            elif type == 'middle':
+                self.itt_exec.middle_click()
         
             
     def save_snapshot(self, reason:str = ''):

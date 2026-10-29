@@ -1,8 +1,11 @@
 import asyncio
 import json
+import os
+import secrets
 import time
 from collections import deque
 from typing import Any, Dict, Optional, Set
+from urllib.parse import unquote
 from uuid import uuid4
 
 import websockets
@@ -10,6 +13,7 @@ from pynput import keyboard
 
 from whimbox.common.cvars import RPC_CONFIG, has_foreground_task
 from whimbox.common.logger import logger
+from whimbox.common.path_lib import CONFIG_PATH
 from whimbox.common.scripts_watcher import scripts_watcher
 from whimbox.config.config import global_config
 from whimbox.agent import whimbox_agent
@@ -40,6 +44,133 @@ _agent_active_tool_call_ids: Dict[str, str] = {}
 _agent_pending_tool_call_ids: Dict[str, deque[str]] = {}
 _agent_tool_metadata: Dict[str, Dict[str, str]] = {}
 _one_dragon_auto_start_scheduled = False
+
+
+# ---------------------------------------------------------------------------
+# RPC 鉴权
+#
+# 前端是独立仓库，无法与后端一次性同步升级，所以鉴权做成过渡式，支持两种携证方式：
+#   1) 连接 URL 查询参数：ws://127.0.0.1:8350/?token=<token>
+#   2) 首帧握手（5 秒内）：{"jsonrpc":"2.0","id":1,"method":"auth","params":{"token":"<token>"}}
+# 二者都失败时回 -32001 并以 close code 4401 断开，且该连接不会进入 _clients，
+# 因此既收不到 event.* 推送，也无法调用任何业务方法。
+# ---------------------------------------------------------------------------
+RPC_AUTH_ERROR_CODE = -32001
+RPC_AUTH_CLOSE_CODE = 4401
+_RPC_AUTH_TIMEOUT_SECONDS = 5.0
+_RPC_AUTH_FAILURE_BACKOFF_SECONDS = 1.0
+
+_rpc_token: Optional[str] = None
+
+
+def get_rpc_auth_token() -> Optional[str]:
+    """当前进程使用的 RPC token（服务器未启动时为 None）。"""
+    return _rpc_token
+
+
+def _rpc_token_file() -> str:
+    return os.path.join(CONFIG_PATH, "rpc_token")
+
+
+def _rpc_auth_required() -> bool:
+    return global_config.get_bool("Rpc", "require_auth", True)
+
+
+def _init_rpc_token() -> str:
+    """生成并持久化本次进程的 RPC token，返回明文供启动日志打印一次。"""
+    global _rpc_token
+    _rpc_token = secrets.token_urlsafe(32)
+    try:
+        os.makedirs(CONFIG_PATH, exist_ok=True)
+        with open(_rpc_token_file(), "w", encoding="utf-8") as f:
+            f.write(_rpc_token)
+    except OSError as exc:  # noqa: BLE001
+        logger.warning(f"RPC token 写入失败，本次进程仍可使用该 token: {exc}")
+    return _rpc_token
+
+
+def _connection_path(websocket: Any) -> str:
+    """取连接请求的 path，兼容新旧 websockets 实现的属性名。"""
+    request = getattr(websocket, "request", None)
+    path = getattr(request, "path", None)
+    if path is None:
+        # websockets < 14 的 legacy 实现把 path 直接挂在连接对象上
+        path = getattr(websocket, "path", None)
+    return str(path or "")
+
+
+def _token_from_query(path: str) -> Optional[str]:
+    if "?" not in path:
+        return None
+    query = path.split("?", 1)[1]
+    for pair in query.split("&"):
+        key, _, value = pair.partition("=")
+        if key == "token":
+            return unquote(value)
+    return None
+
+
+def _token_matches(candidate: Any) -> bool:
+    if not _rpc_token or candidate is None:
+        return False
+    try:
+        return secrets.compare_digest(str(candidate), _rpc_token)
+    except TypeError:
+        return False
+
+
+async def _reject_connection(websocket: Any, reason: str) -> None:
+    try:
+        payload = _error_response(None, RPC_AUTH_ERROR_CODE, "Unauthorized")
+        await websocket.send(json.dumps(payload, ensure_ascii=False))
+    except Exception:  # noqa: BLE001
+        pass
+    # 失败退避：避免前端轮询重连把日志打爆
+    await asyncio.sleep(_RPC_AUTH_FAILURE_BACKOFF_SECONDS)
+    try:
+        await websocket.close(code=RPC_AUTH_CLOSE_CODE, reason=reason)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _authenticate_connection(websocket: Any) -> bool:
+    """True 表示放行；False 表示调用方应拒绝并关闭连接。"""
+    if not _rpc_auth_required():
+        logger.warning("Rpc.require_auth=false，RPC 鉴权已关闭：本机任意进程都可连接并操控游戏")
+        return True
+
+    token = _token_from_query(_connection_path(websocket))
+    if token is not None:
+        return _token_matches(token)
+
+    # 没带查询参数，则等待首帧 auth 握手
+    try:
+        message = await asyncio.wait_for(websocket.recv(), timeout=_RPC_AUTH_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning("RPC 鉴权超时（5 秒内未收到 auth 帧）")
+        return False
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"RPC 鉴权握手读取失败: {exc}")
+        return False
+
+    try:
+        data = json.loads(message)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(data, dict) or data.get("jsonrpc") != "2.0" or data.get("method") != "auth":
+        return False
+    params = data.get("params")
+    if not isinstance(params, dict) or not _token_matches(params.get("token")):
+        return False
+
+    request_id = data.get("id")
+    if request_id is not None:
+        try:
+            reply = _result_response(request_id, {"ok": True})
+            await websocket.send(json.dumps(reply, ensure_ascii=False))
+        except Exception:  # noqa: BLE001
+            pass
+    return True
 
 
 async def _broadcast(method: str, params: Dict[str, Any]) -> None:
@@ -901,6 +1032,10 @@ async def _dispatch(method: str, params: Dict[str, Any]) -> Any:
     if method == "health":
         return {"status": "ok"}
 
+    if method == "auth":
+        # 已通过查询参数/首帧握手鉴权的连接重复确认，幂等返回
+        return {"ok": True}
+
     if method == "plugin.reload":
         init_plugins(force_reload=True)
         whimbox_agent.reload_tools()
@@ -977,6 +1112,12 @@ async def _handle_message(message: str) -> Optional[Dict[str, Any]]:
 
 
 async def _ws_handler(websocket):
+    # 鉴权必须在进入 _clients 之前完成：未通过校验的连接既不注册为客户端，
+    # 也不会收到任何 event.* 广播。
+    if not await _authenticate_connection(websocket):
+        await _reject_connection(websocket, "Unauthorized")
+        return
+
     async def _process_and_reply(message: str) -> None:
         response = await _handle_message(message)
         if response is not None:
@@ -1007,7 +1148,13 @@ async def _ws_handler(websocket):
 async def start_rpc_server():
     host = RPC_CONFIG["host"]
     port = RPC_CONFIG["port"]
-    logger.info(f"RPC server listening on ws://{host}:{port}")
+    token = _init_rpc_token()
+    if _rpc_auth_required():
+        logger.info(f"RPC 鉴权已启用，访问令牌: {token}（已写入 {_rpc_token_file()}）")
+        logger.info(f"RPC server listening on ws://{host}:{port}/?token=<token>")
+    else:
+        logger.warning("Rpc.require_auth=false，RPC 鉴权已关闭：本机任意进程都可连接并操控游戏")
+        logger.info(f"RPC server listening on ws://{host}:{port}")
     global _loop
     _loop = asyncio.get_running_loop()
     set_notifier(notify_event)

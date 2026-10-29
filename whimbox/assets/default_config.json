@@ -73,6 +73,10 @@
         "api_key":{
             "value": "",
             "description": "API密钥(api_key)"
+        },
+        "supports_vision":{
+            "value": "",
+            "description": "模型是否支持图片输入；留空=自动判定，可填 true/false 强制覆盖"
         }
     },
     "OneDragon": {
@@ -215,6 +219,12 @@
         "active_flow_id": {
             "value": "",
             "description": "当前选择的自定义流程"
+        }
+    },
+    "Rpc": {
+        "require_auth": {
+            "value": "true",
+            "description": "RPC 接口鉴权（关闭后本机任意进程都能连接并操控游戏，仅用于前端尚未适配 token 时的临时回退）"
         }
     },
     "Keybinds": {

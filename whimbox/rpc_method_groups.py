@@ -433,12 +433,13 @@ def _get_config_value(path: str) -> Any:
         section = global_config.config.get(parts[0])
         if section is None:
             raise ValueError(f"config section not found: {parts[0]}")
-        return section
+        # 敏感项在 config.json 里只存 secret_ref，这里解析成明文再交给前端
+        return {key: global_config.get_raw(parts[0], key) for key in section}
     if len(parts) == 2:
         section = global_config.config.get(parts[0]) or {}
         if parts[1] not in section:
             raise ValueError(f"config key not found: {path}")
-        return section.get(parts[1])
+        return global_config.get_raw(parts[0], parts[1])
     raise ValueError("path must be in 'Section' or 'Section.key' format")
 
 

@@ -240,6 +240,25 @@
         "message": { "type": "string" },
         "detail": { "type": "object" }
       }
+    },
+    "Params_auth": {
+      "type": "object",
+      "description": "鉴权握手帧。连接建立后 5 秒内发送 {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"auth\",\"params\":{\"token\":\"<token>\"}}；也可改用连接 URL 的 ?token=<token> 查询参数，二者等效。token 在服务端启动时生成并写入 CONFIG_PATH/rpc_token。",
+      "required": ["token"],
+      "properties": {
+        "token": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "Result_auth": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": { "ok": { "type": "boolean" } }
+    },
+    "RpcErrorCode": {
+      "type": "integer",
+      "description": "-32700 Parse error；-32600 Invalid Request；-32601 Method not found；-32602 Invalid params；-32603 Internal error；-32001 Unauthorized（token 缺失或错误。服务端随后以 WebSocket close code 4401 关闭连接，该连接不会被注册为客户端，也不会收到任何 event.* 推送）。鉴权可通过配置项 Rpc.require_auth=false 临时关闭。",
+      "enum": [-32700, -32600, -32601, -32602, -32603, -32001]
     }
   }
 }
