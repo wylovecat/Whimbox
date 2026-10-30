@@ -126,7 +126,26 @@ class WindowsCaptureManager(CaptureManager):
         try:
             if not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
                 return False
-            hdc_compat.BitBlt((0, 0), (width, height), hdc_mem, (0, 0), _SRCCOPY)
+            # 源 DC 必须是「屏幕 DC」，不能用窗口 DC（hdc_mem）。
+            # 走翻转链（flip model）的全屏/无边框窗口——典型就是虚幻引擎游戏——
+            # 窗口 DC 里没有可读的像素：从窗口 DC 拷出来的是 DWM 重定向表面的
+            # 陈旧快照，表现为每一帧都是完全相同的一幅旧画面、亮度恒定，
+            # 连 _is_blank_frame 都发现不了（它只认全零）。屏幕 DC 拿到的是合成
+            # 之后的桌面，与 PIL.ImageGrab 走同一条路径，实测能取到真实游戏画面。
+            screen_dc = win32gui.GetDC(0)
+            if not screen_dc:
+                logger.opt(exception=True).debug("GetDC(0) 返回空，无法回退")
+                return False
+            try:
+                src_dc = win32ui.CreateDCFromHandle(screen_dc)
+                # 客户区左上角在屏幕坐标系里的位置；源矩形从这里开始拷贝
+                origin_x, origin_y = win32gui.ClientToScreen(hwnd, (0, 0))
+                hdc_compat.BitBlt((0, 0), (width, height), src_dc, (origin_x, origin_y), _SRCCOPY)
+            finally:
+                try:
+                    win32gui.ReleaseDC(0, screen_dc)
+                except Exception:
+                    logger.opt(exception=True).debug("failed to release screen DC")
         except Exception:
             logger.opt(exception=True).debug("BitBlt fallback failed")
             return False
