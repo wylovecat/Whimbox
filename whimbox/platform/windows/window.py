@@ -61,49 +61,104 @@ class WindowsWindowManager(WindowManager):
     def is_minimized(self, native_handle: Any) -> bool:
         return bool(native_handle) and win32gui.IsIconic(native_handle)
 
+    # 前台切换是异步的：SetForegroundWindow 返回不代表窗口已经变成前台，
+    # 立刻校验会误判失败（历史上表现为偶发「游戏窗口前置失败」）。每次尝试后
+    # 轮询等待一小段时间再判定。
+    _FOREGROUND_WAIT_SECONDS = 0.5
+
+    def _wait_foreground(self, hwnd: int, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while True:
+            if win32gui.GetForegroundWindow() == hwnd:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.03)
+
+    def _attach_and_set_foreground(self, hwnd: int) -> None:
+        """线程输入挂接 + SetForegroundWindow。对同一输入队列的窗口有效。"""
+        fg_hwnd = win32gui.GetForegroundWindow()
+        current_tid = win32api.GetCurrentThreadId()
+        target_tid, _ = win32process.GetWindowThreadProcessId(hwnd)
+        fg_tid = 0
+        if fg_hwnd:
+            fg_tid, _ = win32process.GetWindowThreadProcessId(fg_hwnd)
+
+        attached_fg = False
+        attached_target = False
+
+        def _safe_attach(src: int, dst: int, attach: bool, label: str) -> bool:
+            if not src or not dst or src == dst:
+                return False
+            try:
+                win32process.AttachThreadInput(src, dst, attach)
+                return True
+            except Exception as exc:
+                logger.warning(f'AttachThreadInput {label} failed: {exc}')
+                return False
+
+        try:
+            attached_fg = _safe_attach(current_tid, fg_tid, True, 'foreground')
+            attached_target = _safe_attach(current_tid, target_tid, True, 'target')
+            win32gui.SetForegroundWindow(hwnd)
+        finally:
+            if attached_target:
+                _safe_attach(current_tid, target_tid, False, 'target-detach')
+            if attached_fg:
+                _safe_attach(current_tid, fg_tid, False, 'foreground-detach')
+
+    def _alt_tap_and_set_foreground(self, hwnd: int) -> None:
+        """先模拟一次 Alt 按键再前置。
+
+        Windows 只允许「当前前台进程」或「刚刚接收过输入」的进程抢占前台。
+        模拟一次按键会让本进程满足后一个条件，这是绕过前台锁定的常用手法。
+        Alt 单击不产生可见副作用（不打开菜单、不输入字符）。
+        """
+        ctypes.windll.user32.keybd_event(win32con.VK_MENU, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
+        time.sleep(0.05)
+        win32gui.SetForegroundWindow(hwnd)
+
+    def _switch_to_this_window(self, hwnd: int) -> None:
+        """SwitchToThisWindow：任务栏切窗用的未公开接口，不受前台锁定限制。"""
+        ctypes.windll.user32.SwitchToThisWindow(hwnd, True)
+
+    def _bring_to_top(self, hwnd: int) -> None:
+        win32gui.BringWindowToTop(hwnd)
+        win32gui.SetWindowPos(
+            hwnd, win32con.HWND_TOP, 0, 0, 0, 0,
+            win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW,
+        )
+
     def set_foreground(self, native_handle: Any, pid: Optional[int], process_name: Optional[str]) -> None:
         hwnd: int = native_handle or 0
-
-        def _activate(h: int) -> None:
-            if win32gui.IsIconic(h):
-                win32gui.ShowWindow(h, win32con.SW_RESTORE)
-
-            fg_hwnd = win32gui.GetForegroundWindow()
-            current_tid = win32api.GetCurrentThreadId()
-            target_tid, _ = win32process.GetWindowThreadProcessId(h)
-            fg_tid = 0
-            if fg_hwnd:
-                fg_tid, _ = win32process.GetWindowThreadProcessId(fg_hwnd)
-
-            attached_fg = False
-            attached_target = False
-
-            def _safe_attach(src: int, dst: int, attach: bool, label: str) -> bool:
-                if not src or not dst or src == dst:
-                    return False
-                try:
-                    win32process.AttachThreadInput(src, dst, attach)
-                    return True
-                except Exception as exc:
-                    logger.warning(f'AttachThreadInput {label} failed: {exc}')
-                    return False
-
-            try:
-                attached_fg = _safe_attach(current_tid, fg_tid, True, 'foreground')
-                attached_target = _safe_attach(current_tid, target_tid, True, 'target')
-                win32gui.SetForegroundWindow(h)
-            finally:
-                if attached_target:
-                    _safe_attach(current_tid, target_tid, False, 'target-detach')
-                if attached_fg:
-                    _safe_attach(current_tid, fg_tid, False, 'foreground-detach')
-
         try:
             if not self.is_alive(hwnd):
                 raise Exception('游戏窗口不存在')
-            _activate(hwnd)
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                time.sleep(0.1)
             if self.is_foreground(hwnd, pid):
                 return
+            # 逐级降级：单条路径在不同窗口状态/前台锁定时会失效，而前置失败会直接
+            # 中断整个任务，所以这里宁可多试几种手法，也不要把失败留给上层。
+            attempts = (
+                ('attach', self._attach_and_set_foreground),
+                ('alt-tap', self._alt_tap_and_set_foreground),
+                ('switch-to-window', self._switch_to_this_window),
+                ('bring-to-top', self._bring_to_top),
+            )
+            for name, attempt in attempts:
+                try:
+                    attempt(hwnd)
+                except Exception as exc:
+                    logger.debug(f'前置尝试 {name} 失败: {exc}')
+                    continue
+                if self._wait_foreground(hwnd, self._FOREGROUND_WAIT_SECONDS):
+                    if name != 'attach':
+                        logger.debug(f'游戏窗口前置成功（{name}）')
+                    return
+                logger.debug(f'前置尝试 {name} 未生效，继续降级')
             raise Exception('无法将游戏窗口前置')
         except Exception as exc:
             logger.error(exc)
